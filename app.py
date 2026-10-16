@@ -11,26 +11,25 @@ def procesar_texto_a_filas(texto):
     lineas = texto.split('\n')
     
     for linea in lineas:
-        linea_limpia = linea.strip().replace('|', ' ')
-        if not linea_limpia:
+        # Limpiamos barras y caracteres raros
+        l = linea.replace('|', ' ').strip()
+        if not l:
             continue
             
-        # Buscar directamente los códigos de MyFamily (MF...) o Chapitas (CH...)
-        if re.search(r'\b(MF[A-Z0-9]+|CH\d{2,})\b', linea_limpia):
-            # Limpiar espacios múltiples para separar las columnas
-            columnas = [col.strip() for col in re.split(r'\s{2,}|\t', linea_limpia) if col.strip()]
+        # Filtramos subtotales y encabezados para que no los sume como productos
+        if re.search(r'(Subtotal|Total|Impuestos|IVA|CUIT|Condición|Página|Fecha|Base|Bruto)', l, re.IGNORECASE):
+            continue
+
+        # BUSCADOR UNIVERSAL: Captura la fila si tiene palabras y al menos un número decimal (ej. 12,00 o 1.234,56)
+        if re.search(r'\d+,\d{2}', l) and re.search(r'[A-Za-z]', l):
+            # Intentamos separar por tabulaciones o espacios grandes
+            columnas = [col.strip() for col in re.split(r'\s{2,}|\t', l) if col.strip()]
             
-            # Si el separador de espacios falla, partimos por espacios simples
+            # Si todo quedó pegado, lo separamos por espacios simples
             if len(columnas) < 3:
-                columnas = linea_limpia.split()
+                columnas = l.split()
                 
             filas.append(columnas)
-            continue
-            
-        # Respaldo para filas de Factura que empiezan con "Cantidad,00" (Ej: "2,00 CH01...")
-        match_fac = re.match(r'^(\d+,\d{2})\s+([A-Z0-9_-]+)\s+(.+)$', linea_limpia)
-        if match_fac:
-            filas.append(list(match_fac.groups()))
 
     return filas
 
@@ -46,6 +45,7 @@ def extraer_datos_documento(pdf_file, paginas=None):
         for num_pag in paginas:
             if 1 <= num_pag <= total_paginas:
                 page = pdf.pages[num_pag - 1]
+                # Extraemos el texto crudo intentando mantener la posición visual
                 t = page.extract_text(layout=True) or page.extract_text() or ""
                 texto_completo += f"--- Página {num_pag} ---\n" + t + "\n\n"
 
@@ -101,15 +101,15 @@ if listo_para_comparar:
         with col_r:
             st.subheader("📋 Orden de Compra")
             if tablas_remito:
-                st.dataframe(pd.DataFrame(tablas_remito))
+                st.dataframe(pd.DataFrame(tablas_remito), use_container_width=True)
             else:
-                st.warning("No se detectaron códigos.")
+                st.warning("Aún no se detectan artículos.")
         with col_f:
             st.subheader("🧾 Factura")
             if tablas_factura:
-                st.dataframe(pd.DataFrame(tablas_factura))
+                st.dataframe(pd.DataFrame(tablas_factura), use_container_width=True)
             else:
-                st.warning("No se detectaron códigos.")
+                st.warning("Aún no se detectan artículos.")
 
     with tab2:
         st.text_area("Texto interpretado Orden", texto_remito, height=400)
