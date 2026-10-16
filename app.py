@@ -21,7 +21,6 @@ if api_key:
 
 def extraer_texto_pdf(archivo_bytes, paginas):
     texto = ""
-    # Usamos io.BytesIO para "rebobinar" y leer el archivo sin que se vacíe
     with pdfplumber.open(io.BytesIO(archivo_bytes)) as pdf:
         for num in paginas:
             if 1 <= num <= len(pdf.pages):
@@ -32,6 +31,7 @@ def extraer_texto_pdf(archivo_bytes, paginas):
 
 def extraer_datos_con_ia(texto, tipo_doc):
     if not texto.strip():
+        st.warning(f"⚠️ El documento '{tipo_doc}' parece ser una imagen sin texto real. No se pudo leer.")
         return pd.DataFrame()
 
     prompt = f"""
@@ -51,8 +51,7 @@ def extraer_datos_con_ia(texto, tipo_doc):
         datos = json.loads(respuesta.text)
         return pd.DataFrame(datos)
     except Exception as e:
-        st.error(f"Error estructurando los datos de {tipo_doc}.")
-        st.info(str(e))
+        st.error(f"❌ Error al pedirle a la IA que estructure los datos de {tipo_doc}.")
         return pd.DataFrame()
 
 # --- Interfaz de Carga ---
@@ -63,7 +62,9 @@ else:
 
     df_remito = pd.DataFrame()
     df_factura = pd.DataFrame()
-    listo_para_comparar = False
+    texto_remito = ""
+    texto_factura = ""
+    procesado = False
 
     if modo_carga == "Un solo PDF (Remito + Factura)":
         archivo_unico = st.file_uploader("Subir PDF unificado", type=["pdf"])
@@ -82,7 +83,7 @@ else:
                     texto_factura = extraer_texto_pdf(archivo_bytes, pag_factura)
                     df_remito = extraer_datos_con_ia(texto_remito, "Orden de Compra / Remito")
                     df_factura = extraer_datos_con_ia(texto_factura, "Factura")
-                    listo_para_comparar = True
+                    procesado = True
 
     else:
         c1, c2 = st.columns(2)
@@ -96,48 +97,54 @@ else:
                     texto_factura = extraer_texto_pdf(pdf_factura.getvalue(), [1])
                     df_remito = extraer_datos_con_ia(texto_remito, "Orden de Compra / Remito")
                     df_factura = extraer_datos_con_ia(texto_factura, "Factura")
-                    listo_para_comparar = True
+                    procesado = True
 
     # --- Resultados y Cruce ---
-    if listo_para_comparar and not df_remito.empty and not df_factura.empty:
+    if procesado:
         st.divider()
-        st.header("✅ Extracción Exitosa")
+        st.header("✅ Resultado del Análisis")
         
-        c1, c2 = st.columns(2)
-        with c1:
-            st.subheader("📋 Datos Orden/Remito")
-            st.dataframe(df_remito, use_container_width=True)
-        with c2:
-            st.subheader("🧾 Datos Factura")
-            st.dataframe(df_factura, use_container_width=True)
+        # Mostramos qué leyó realmente el programa (para descartar que esté en blanco)
+        with st.expander("👁️ Ver texto bruto extraído de los PDFs (Clic para abrir)"):
+            st.text_area("Texto Remito", texto_remito, height=150)
+            st.text_area("Texto Factura", texto_factura, height=150)
+        
+        if not df_remito.empty or not df_factura.empty:
+            c1, c2 = st.columns(2)
+            with c1:
+                st.subheader("📋 Datos Orden/Remito")
+                st.dataframe(df_remito, use_container_width=True) if not df_remito.empty else st.warning("Sin datos.")
+            with c2:
+                st.subheader("🧾 Datos Factura")
+                st.dataframe(df_factura, use_container_width=True) if not df_factura.empty else st.warning("Sin datos.")
 
-        st.divider()
-        st.header("⚖️ Conciliación Automática")
-        
-        if 'codigo' in df_remito.columns and 'codigo' in df_factura.columns:
-            # Rellenar códigos faltantes
-            df_remito['codigo'] = df_remito['codigo'].replace('', pd.NA).fillna(df_remito['descripcion'])
-            df_factura['codigo'] = df_factura['codigo'].replace('', pd.NA).fillna(df_factura['descripcion'])
+            st.divider()
             
-            df_cruce = pd.merge(df_remito, df_factura, on='codigo', how='outer', suffixes=('_remito', '_factura'))
-            
-            # Limpiar formatos de números (por si vienen con comas en vez de puntos)
-            def a_numero(val):
-                try:
-                    return float(str(val).replace(',', '.'))
-                except:
-                    return 0.0
-            
-            df_cruce['cantidad_remito'] = df_cruce['cantidad_remito'].apply(a_numero)
-            df_cruce['cantidad_factura'] = df_cruce['cantidad_factura'].apply(a_numero)
-            df_cruce['diferencia_cant'] = df_cruce['cantidad_remito'] - df_cruce['cantidad_factura']
-            
-            st.write("Diferencias entre cantidades resaltadas en rojo.")
-            
-            def resaltar_diferencias(row):
-                if row['diferencia_cant'] != 0:
-                    return ['background-color: #ffcccc'] * len(row)
-                return [''] * len(row)
+            if not df_remito.empty and not df_factura.empty and 'codigo' in df_remito.columns and 'codigo' in df_factura.columns:
+                st.header("⚖️ Conciliación Automática")
                 
-            st.dataframe(df_cruce.style.apply(resaltar_diferencias, axis=1), use_container_width=True)
-            st.warning("No se pudo realizar el cruce automático.")
+                df_remito['codigo'] = df_remito['codigo'].replace('', pd.NA).fillna(df_remito.get('descripcion', ''))
+                df_factura['codigo'] = df_factura['codigo'].replace('', pd.NA).fillna(df_factura.get('descripcion', ''))
+                
+                df_cruce = pd.merge(df_remito, df_factura, on='codigo', how='outer', suffixes=('_remito', '_factura'))
+                
+                def a_numero(val):
+                    try:
+                        return float(str(val).replace(',', '.'))
+                    except:
+                        return 0.0
+                
+                df_cruce['cantidad_remito'] = df_cruce.get('cantidad_remito', pd.Series()).apply(a_numero)
+                df_cruce['cantidad_factura'] = df_cruce.get('cantidad_factura', pd.Series()).apply(a_numero)
+                df_cruce['diferencia_cant'] = df_cruce['cantidad_remito'] - df_cruce['cantidad_factura']
+                
+                st.write("Diferencias entre cantidades resaltadas en rojo.")
+                
+                def resaltar_diferencias(row):
+                    if row['diferencia_cant'] != 0:
+                        return ['background-color: #ffcccc'] * len(row)
+                    return [''] * len(row)
+                    
+                st.dataframe(df_cruce.style.apply(resaltar_diferencias, axis=1), use_container_width=True)
+            else:
+                st.info("No se pudieron cruzar los datos porque falta la columna de códigos en uno de los archivos.")
