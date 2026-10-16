@@ -20,13 +20,11 @@ if api_key:
 
 def obtener_modelo_activo():
     """Selecciona estrictamente gemini-3.8-flash o filtra cualquier modelo descontinuado."""
-    # 1. Intentamos directamente con el modelo que exige tu cuenta
     try:
         return genai.GenerativeModel('gemini-3.8-flash')
     except Exception:
         pass
 
-    # 2. Si falla, buscamos en la lista filtrando explícitamente los modelos obsoletos
     try:
         modelos_disponibles = [
             m.name.replace('models/', '') 
@@ -34,7 +32,6 @@ def obtener_modelo_activo():
             if 'generateContent' in m.supported_generation_methods
         ]
         
-        # Ignorar explícitamente versiones obsoletas que causan 404
         modelos_validos = [
             m for m in modelos_disponibles 
             if not any(obsoleto in m for obsoleto in ['2.5', '1.5-flash', '1.5-pro'])
@@ -174,4 +171,4 @@ else:
                     return ['background-color: #ffcccc'] * len(row)
                 return [''] * len(row)
                 
-            st.dataframe(df_cruce.style.apply(resaltar_diferencias, axis=1), use_container_width=True)is=1), use_container_width=True)
+            st.dataframe(df_cruce.style.apply(resaltar_diferencias, axis=1), use_container_width=True)
