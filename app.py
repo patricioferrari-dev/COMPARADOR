@@ -15,8 +15,7 @@ with st.sidebar:
 
 if api_key:
     genai.configure(api_key=api_key)
-    # Usamos Gemini 1.5 Flash que tiene soporte nativo para procesar archivos PDF visualmente
-   modelo = genai.GenerativeModel('gemini-1.5-pro-latest')
+    modelo = genai.GenerativeModel('gemini-1.5-pro-latest')
 
 def procesar_documento_ia(archivo_bytes, prompt):
     """Envía el PDF crudo directamente a los 'ojos' de Gemini para que haga OCR y lo estructure."""
@@ -88,7 +87,6 @@ else:
                     
                     resultado = procesar_documento_ia(archivo_unico.getvalue(), prompt_unificado)
                     
-                    # CORREGIDO AQUÍ: se usa "and" en vez de "y"
                     if resultado and "remito" in resultado and "factura" in resultado:
                         df_remito = pd.DataFrame(resultado["remito"])
                         df_factura = pd.DataFrame(resultado["factura"])
@@ -111,13 +109,11 @@ else:
         st.header("⚖️ Conciliación Automática")
         
         if 'codigo' in df_remito.columns and 'codigo' in df_factura.columns:
-            # Rellenar códigos vacíos con la descripción para que pueda hacer el cruce si no hay código
             df_remito['codigo'] = df_remito['codigo'].replace('', pd.NA).fillna(df_remito['descripcion'])
             df_factura['codigo'] = df_factura['codigo'].replace('', pd.NA).fillna(df_factura['descripcion'])
             
             df_cruce = pd.merge(df_remito, df_factura, on='codigo', how='outer', suffixes=('_remito', '_factura'))
             
-            # Cálculo de diferencias
             df_cruce['diferencia_cant'] = pd.to_numeric(df_cruce['cantidad_remito'], errors='coerce').fillna(0) - pd.to_numeric(df_cruce['cantidad_factura'], errors='coerce').fillna(0)
             
             st.write("Comparamos los artículos. Las filas con diferencias están resaltadas en rojo.")
