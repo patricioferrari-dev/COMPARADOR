@@ -19,27 +19,36 @@ if api_key:
     genai.configure(api_key=api_key)
 
 def obtener_modelo_activo():
-    """Obtiene dinámicamente un modelo activo sin hardcodear nombres descontinuados."""
+    """Selecciona estrictamente gemini-3.8-flash o filtra cualquier modelo descontinuado."""
+    # 1. Intentamos directamente con el modelo que exige tu cuenta
     try:
-        # Obtenemos los modelos que soportan generateContent
+        return genai.GenerativeModel('gemini-3.8-flash')
+    except Exception:
+        pass
+
+    # 2. Si falla, buscamos en la lista filtrando explícitamente los modelos obsoletos
+    try:
         modelos_disponibles = [
             m.name.replace('models/', '') 
             for m in genai.list_models() 
             if 'generateContent' in m.supported_generation_methods
         ]
         
-        # Priorizamos flash sobre pro para mayor velocidad
-        modelos_flash = [m for m in modelos_disponibles if 'flash' in m]
-        if modelos_flash:
-            return genai.GenerativeModel(modelos_flash[0])
+        # Ignorar explícitamente versiones obsoletas que causan 404
+        modelos_validos = [
+            m for m in modelos_disponibles 
+            if not any(obsoleto in m for obsoleto in ['2.5', '1.5-flash', '1.5-pro'])
+        ]
+        
+        if modelos_validos:
+            return genai.GenerativeModel(modelos_validos[0])
             
         if modelos_disponibles:
             return genai.GenerativeModel(modelos_disponibles[0])
     except Exception:
         pass
         
-    # Respaldo universal estándar
-    return genai.GenerativeModel('gemini-1.5-flash')
+    return genai.GenerativeModel('gemini-3.8-flash')
 
 def procesar_pdf_como_imagen(pdf_bytes, paginas, tipo_doc, modelo):
     try:
@@ -97,7 +106,7 @@ else:
             with c2: pag_factura = st.multiselect("Páginas Factura:", list(range(1, cant + 1)), default=[2] if cant > 1 else [1])
             
             if st.button("🚀 Comparar Documentos"):
-                with st.spinner("Conectando con modelo activo y procesando lectura visual..."):
+                with st.spinner("Procesando con gemini-3.8-flash..."):
                     modelo = obtener_modelo_activo()
                     res_remito = procesar_pdf_como_imagen(archivo_bytes, pag_remito, "Remito", modelo)
                     res_factura = procesar_pdf_como_imagen(archivo_bytes, pag_factura, "Factura", modelo)
@@ -113,7 +122,7 @@ else:
         
         if pdf_remito and pdf_factura:
             if st.button("🚀 Comparar Documentos"):
-                with st.spinner("Conectando con modelo activo y procesando lectura visual..."):
+                with st.spinner("Procesando con gemini-3.8-flash..."):
                     modelo = obtener_modelo_activo()
                     res_remito = procesar_pdf_como_imagen(pdf_remito.getvalue(), [1], "Remito", modelo)
                     res_factura = procesar_pdf_como_imagen(pdf_factura.getvalue(), [1], "Factura", modelo)
@@ -165,5 +174,4 @@ else:
                     return ['background-color: #ffcccc'] * len(row)
                 return [''] * len(row)
                 
-            st.dataframe(df_cruce.style.apply(resaltar_diferencias, axis=1), use_container_width=True)
-            st.dataframe(df_cruce.style.apply(resaltar_diferencias, axis=1), use_container_width=True)
+            st.dataframe(df_cruce.style.apply(resaltar_diferencias, axis=1), use_container_width=True)is=1), use_container_width=True)
