@@ -16,7 +16,7 @@ with st.sidebar:
 if api_key:
     genai.configure(api_key=api_key)
     # Usamos Gemini 1.5 Flash que tiene soporte nativo para procesar archivos PDF visualmente
-    modelo = genai.GenerativeModel('gemini-1.5-flash-latest')
+   modelo = genai.GenerativeModel('gemini-1.5-pro-latest')
 
 def procesar_documento_ia(archivo_bytes, prompt):
     """Envía el PDF crudo directamente a los 'ojos' de Gemini para que haga OCR y lo estructure."""
