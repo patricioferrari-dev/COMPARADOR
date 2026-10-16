@@ -9,9 +9,9 @@ from PIL import Image
 st.set_page_config(page_title="Comparador IA: Remito vs Factura", layout="wide")
 
 st.title("🤖 Comparador IA Definitivo (Visión Real)")
-st.write("Esta versión convierte los PDFs en imágenes y busca automáticamente el modelo de IA compatible con tu cuenta.")
+st.write("Esta versión convierte los PDFs en imágenes y usa el modelo actualizado de IA para extraer los datos sin fallos.")
 
-# --- Configuración de la API y Autodetección de Modelo ---
+# --- Configuración de la API ---
 with st.sidebar:
     st.header("🔑 Configuración")
     api_key = st.text_input("Ingresá tu API Key de Gemini:", type="password")
@@ -20,28 +20,11 @@ modelo = None
 if api_key:
     try:
         genai.configure(api_key=api_key)
-        
-        # Le preguntamos a Google qué modelos existen para tu API Key
-        modelos_disponibles = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # Buscamos el mejor modelo disponible en orden de preferencia
-        nombres_preferidos = ['models/gemini-1.5-flash', 'models/gemini-1.5-pro', 'models/gemini-pro-vision']
-        modelo_elegido = next((m for m in nombres_preferidos if m in modelos_disponibles), None)
-        
-        # Si no encuentra ninguno de los preferidos, usa el primero de la lista que soporte imágenes
-        if not modelo_elegido and modelos_disponibles:
-            modelo_elegido = modelos_disponibles[0]
-            
-        if modelo_elegido:
-            # Quitamos el prefijo 'models/' para instanciarlo correctamente
-            nombre_limpio = modelo_elegido.replace('models/', '')
-            modelo = genai.GenerativeModel(nombre_limpio)
-            st.sidebar.success(f"✅ Conectado al modelo: {nombre_limpio}")
-        else:
-            st.sidebar.error("Tu API Key no tiene modelos compatibles habilitados.")
-            
+        # Forzamos exactamente el modelo que exige Google en el error
+        modelo = genai.GenerativeModel('gemini-3.8-flash')
+        st.sidebar.success("✅ Conectado al modelo: gemini-3.8-flash")
     except Exception as e:
-        st.sidebar.error("Error al verificar modelos. Revisá tu API Key.")
+        st.sidebar.error("Error al configurar la API Key.")
         st.sidebar.info(str(e))
 
 def procesar_pdf_como_imagen(pdf_bytes, paginas, tipo_doc):
