@@ -1,115 +1,140 @@
 import streamlit as st
 import pdfplumber
 import pandas as pd
-import re
+import google.generativeai as genai
+import json
 
-st.set_page_config(page_title="Comparador Remito vs Factura", layout="wide")
-st.title("📋 Comparador Inteligente de Comprobantes")
+st.set_page_config(page_title="Comparador IA: Remito vs Factura", layout="wide")
 
-def extraer_datos_documento(pdf_file, paginas=None):
-    filas_detectadas = []
-    texto_completo = ""
+st.title("🤖 Comparador Automático con Inteligencia Artificial")
+st.write("Usa IA para leer PDFs desordenados, extraer los artículos y compararlos automáticamente.")
 
+# --- Configuración de la API ---
+with st.sidebar:
+    st.header("🔑 Configuración")
+    api_key = st.text_input("Ingresá tu API Key de Gemini:", type="password")
+    st.markdown("[Obtener API Key gratis aquí](https://aistudio.google.com/app/apikey)")
+
+if api_key:
+    genai.configure(api_key=api_key)
+    # Usamos el modelo flash por ser rápido y eficiente
+    modelo = genai.GenerativeModel('gemini-1.5-flash')
+
+def extraer_texto_pdf(pdf_file, paginas):
+    texto = ""
     with pdfplumber.open(pdf_file) as pdf:
-        total_paginas = len(pdf.pages)
-        if not paginas:
-            paginas = list(range(1, total_paginas + 1))
+        for num in paginas:
+            if 1 <= num <= len(pdf.pages):
+                page = pdf.pages[num - 1]
+                texto += page.extract_text(layout=True) or page.extract_text() or ""
+                texto += "\n"
+    return texto
 
-        for num_pag in paginas:
-            if 1 <= num_pag <= total_paginas:
-                page = pdf.pages[num_pag - 1]
-                
-                # TÉCNICA DEFINITIVA: Extraer por coordenadas exactas
-                words = page.extract_words()
-                lineas_dict = {}
-                
-                for w in words:
-                    # Agrupamos palabras que estén a la misma altura (tolerancia de 3 puntos)
-                    y = round(w['top'] / 3) * 3
-                    if y not in lineas_dict:
-                        lineas_dict[y] = []
-                    lineas_dict[y].append(w)
-                
-                texto_completo += f"--- Página {num_pag} ---\n"
-                
-                # Reconstruimos renglón por renglón
-                for y in sorted(lineas_dict.keys()):
-                    # Ordenamos las palabras de izquierda a derecha
-                    palabras = sorted(lineas_dict[y], key=lambda x: x['x0'])
-                    texto_linea = " ".join([p['text'] for p in palabras])
-                    texto_completo += texto_linea + "\n"
-                    
-                    l_upper = texto_linea.upper()
-                    
-                    # Filtramos basura, direcciones y encabezados
-                    if re.search(r'(SUBTOTAL|TOTAL|IMPUESTO|IVA|CUIT|CONDIC|PÁGINA|FECHA|BASE|BRUTO|DOMICILIO|CLIENTE|LOCALIDAD|ALVAREZ|THOMAS|MERCEDES|AIRES|CAPITAL)', l_upper):
-                        continue
-                        
-                    # Si el renglón tiene números y al menos dos letras juntas (código o descripción), lo guardamos
-                    if re.search(r'\d', l_upper) and re.search(r'[A-Z]{2,}', l_upper):
-                        # Separamos de forma limpia los elementos
-                        filas_detectadas.append(texto_linea.split())
-                        
-                texto_completo += "\n"
-
-    return filas_detectadas, texto_completo
+def extraer_datos_con_ia(texto, tipo_doc):
+    prompt = f"""
+    Sos un asistente experto en facturación argentina. Analizá el siguiente texto extraído de un/a {tipo_doc}.
+    Encontrá todos los artículos o productos facturados/remitidos.
+    Ignorá subtotales, impuestos, direcciones y encabezados.
+    
+    Devolvé ÚNICAMENTE un array JSON válido con la siguiente estructura exacta:
+    [
+      {{"codigo": "CH01", "descripcion": "Chapita...", "cantidad": 2.0, "precio": 100.50}},
+      ...
+    ]
+    Si no encontrás un código, dejá un string vacío "". Si no hay precio (ej. en un remito), poné 0.0.
+    NO agregues texto antes ni después del JSON. NO uses formato markdown (```json).
+    
+    Texto del documento:
+    {texto}
+    """
+    
+    try:
+        respuesta = modelo.generate_content(prompt)
+        texto_json = respuesta.text.strip()
+        # Limpieza por si la IA devuelve markdown
+        if texto_json.startswith("```json"):
+            texto_json = texto_json[7:-3].strip()
+        elif texto_json.startswith("```"):
+            texto_json = texto_json[3:-3].strip()
+            
+        datos = json.loads(texto_json)
+        return pd.DataFrame(datos)
+    except Exception as e:
+        st.error(f"Error procesando el {tipo_doc} con IA. Revisá el texto bruto.")
+        return pd.DataFrame()
 
 # --- Interfaz de Carga ---
-modo_carga = st.radio("¿Cómo querés subir los documentos?", ["Un solo PDF (Remito/Orden + Factura)", "Dos PDFs separados"], horizontal=True)
-
-tablas_remito, tablas_factura = [], []
-texto_remito, texto_factura = "", ""
-listo_para_comparar = False
-
-if modo_carga == "Un solo PDF (Remito/Orden + Factura)":
-    archivo_unico = st.file_uploader("Subir el PDF unificado", type=["pdf"], key="unico")
-    if archivo_unico:
-        with pdfplumber.open(archivo_unico) as pdf:
-            cant_paginas = len(pdf.pages)
-        col1, col2 = st.columns(2)
-        with col1:
-            pag_remito = st.multiselect("Página(s) Remito / Orden:", list(range(1, cant_paginas + 1)), default=[1] if cant_paginas >= 1 else [])
-        with col2:
-            pag_factura = st.multiselect("Página(s) Factura:", list(range(1, cant_paginas + 1)), default=[2] if cant_paginas >= 2 else [1])
-            
-        if pag_remito and pag_factura:
-            tablas_remito, texto_remito = extraer_datos_documento(archivo_unico, pag_remito)
-            tablas_factura, texto_factura = extraer_datos_documento(archivo_unico, pag_factura)
-            listo_para_comparar = True
+if not api_key:
+    st.warning("👈 Por favor, ingresá tu API Key en el panel izquierdo para comenzar.")
 else:
-    col1, col2 = st.columns(2)
-    with col1:
-        pdf_remito = st.file_uploader("Subir Remito / Orden", type=["pdf"], key="remito")
-    with col2:
-        pdf_factura = st.file_uploader("Subir Factura", type=["pdf"], key="factura")
+    modo_carga = st.radio("Formato de subida:", ["Un solo PDF (Remito + Factura)", "Dos PDFs separados"], horizontal=True)
+
+    df_remito = pd.DataFrame()
+    df_factura = pd.DataFrame()
+    listo_para_comparar = False
+
+    if modo_carga == "Un solo PDF (Remito + Factura)":
+        archivo_unico = st.file_uploader("Subir PDF", type=["pdf"])
+        if archivo_unico:
+            with pdfplumber.open(archivo_unico) as pdf:
+                cant = len(pdf.pages)
+            c1, c2 = st.columns(2)
+            with c1: pag_remito = st.multiselect("Páginas Remito/Orden:", list(range(1, cant + 1)), default=[1])
+            with c2: pag_factura = st.multiselect("Páginas Factura:", list(range(1, cant + 1)), default=[2] if cant > 1 else [1])
+            
+            if st.button("🚀 Extraer y Comparar"):
+                with st.spinner("La IA está leyendo los documentos..."):
+                    texto_remito = extraer_texto_pdf(archivo_unico, pag_remito)
+                    texto_factura = extraer_texto_pdf(archivo_unico, pag_factura)
+                    df_remito = extraer_datos_con_ia(texto_remito, "Orden de Compra / Remito")
+                    df_factura = extraer_datos_con_ia(texto_factura, "Factura")
+                    listo_para_comparar = True
+
+    else:
+        c1, c2 = st.columns(2)
+        with c1: pdf_remito = st.file_uploader("Subir Remito/Orden", type=["pdf"])
+        with c2: pdf_factura = st.file_uploader("Subir Factura", type=["pdf"])
         
-    if pdf_remito and pdf_factura:
-        tablas_remito, texto_remito = extraer_datos_documento(pdf_remito)
-        tablas_factura, texto_factura = extraer_datos_documento(pdf_factura)
-        listo_para_comparar = True
+        if pdf_remito and pdf_factura:
+            if st.button("🚀 Extraer y Comparar"):
+                with st.spinner("La IA está leyendo los documentos..."):
+                    texto_remito = extraer_texto_pdf(pdf_remito, [1]) # Simplificado a pag 1
+                    texto_factura = extraer_texto_pdf(pdf_factura, [1])
+                    df_remito = extraer_datos_con_ia(texto_remito, "Orden de Compra / Remito")
+                    df_factura = extraer_datos_con_ia(texto_factura, "Factura")
+                    listo_para_comparar = True
 
-# --- Resultados ---
-if listo_para_comparar:
-    st.divider()
-    st.header("🔍 Datos Extraídos")
-    tab1, tab2, tab3 = st.tabs(["📊 Tabla de Ítems", "📜 Texto Orden reconstruido", "📜 Texto Factura reconstruido"])
+    # --- Resultados y Cruce ---
+    if listo_para_comparar and not df_remito.empty and not df_factura.empty:
+        st.divider()
+        st.header("✅ Extracción Exitosa")
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("📋 Datos Orden/Remito")
+            st.dataframe(df_remito, use_container_width=True)
+        with c2:
+            st.subheader("🧾 Datos Factura")
+            st.dataframe(df_factura, use_container_width=True)
 
-    with tab1:
-        col_r, col_f = st.columns(2)
-        with col_r:
-            st.subheader("📋 Orden de Compra")
-            if tablas_remito:
-                st.dataframe(pd.DataFrame(tablas_remito), use_container_width=True)
-            else:
-                st.warning("Aún no se detectan artículos.")
-        with col_f:
-            st.subheader("🧾 Factura")
-            if tablas_factura:
-                st.dataframe(pd.DataFrame(tablas_factura), use_container_width=True)
-            else:
-                st.warning("Aún no se detectan artículos.")
-
-    with tab2:
-        st.text_area("Texto interpretado Orden", texto_remito, height=400)
-    with tab3:
-        st.text_area("Texto interpretado Factura", texto_factura, height=400)
+        st.divider()
+        st.header("⚖️ Conciliación Automática")
+        
+        # Unimos las tablas usando el 'codigo' o 'descripcion' como clave
+        if 'codigo' in df_remito.columns and 'codigo' in df_factura.columns:
+            df_cruce = pd.merge(df_remito, df_factura, on='codigo', how='outer', suffixes=('_remito', '_factura'))
+            
+            # Calculamos diferencias
+            df_cruce['diferencia_cant'] = df_cruce['cantidad_remito'].fillna(0) - df_cruce['cantidad_factura'].fillna(0)
+            
+            st.write("Comparamos los artículos basándonos en su código. Las filas con diferencias están resaltadas.")
+            
+            # Resaltar filas con diferencias
+            def resaltar_diferencias(row):
+                if row['diferencia_cant'] != 0:
+                    return ['background-color: #ffcccc'] * len(row)
+                return [''] * len(row)
+                
+            st.dataframe(df_cruce.style.apply(resaltar_diferencias, axis=1), use_container_width=True)
+        else:
+            st.warning("No se detectó una columna de código clara para hacer el cruce automático.")
