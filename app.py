@@ -1,114 +1,126 @@
 import streamlit as st
 import pdfplumber
 import pandas as pd
-import re
 
 st.set_page_config(page_title="Comparador Remito vs Factura", layout="wide")
 
 st.title("📋 Comparador Remito vs Factura (PDF)")
-st.write("Subí los archivos PDF de tu Remito y Factura para realizar la conciliación automática de ítems y cantidades.")
+st.write("Podés subir **dos archivos separados** o **un solo PDF** que contenga tanto el remito como la factura.")
 
 # --- Funciones de Extracción ---
 
-def extraer_texto_pdf(file):
-    """Extrae todo el texto plano de un archivo PDF subido."""
-    texto = ""
-    with pdfplumber.open(file) as pdf:
-        for page in pdf.pages:
-            texto += page.extract_text() or ""
-            texto += "\n"
-    return texto
-
-def procesar_lineas_pdf(texto):
-    """
-    Parsea las líneas del PDF buscando patrones de código/descripción, cantidad y precio.
-    Ajusta estas expresiones regulares si tus PDFs tienen un formato muy específico.
-    """
-    items = []
-    lineas = texto.split('\n')
+def extraer_tablas_y_texto(pdf_file, paginas=None):
+    """Extrae tablas y texto de páginas específicas de un PDF."""
+    filas_tablas = []
+    texto_completo = ""
     
-    for linea in lineas:
-        linea = linea.strip()
-        if not linea:
-            continue
-            
-        # Busca números flotantes/enteros al final o dentro de la línea
-        # Ejemplo de formato típico: "PROD-001 Producto de prueba 10 1500.00"
-        coincidencias = re.findall(r'(\d+[\.,]?\d*)', linea)
+    with pdfplumber.open(pdf_file) as pdf:
+        total_paginas = len(pdf.pages)
         
-        # Si la línea contiene al menos una cantidad
-        if coincidencias:
-            # Estrategia general de captura básica de items:
-            partes = linea.split()
-            # Intenta identificar descripciones e importes
-            # Esta lógica se adapta según el proveedor/layout de comprobantes
-            items.append({
-                "linea_completa": linea,
-                "valores_detectados": coincidencias
-            })
+        # Si no se especifican páginas, procesa todas
+        if not paginas:
+            paginas = list(range(1, total_paginas + 1))
             
-    return lineas
-
-# --- Interfaz de usuario ---
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("1. Cargar Remito")
-    pdf_remito = st.file_uploader("Subir PDF del Remito", type=["pdf"], key="remito")
-
-with col2:
-    st.subheader("2. Cargar Factura")
-    pdf_factura = st.file_uploader("Subir PDF de la Factura", type=["pdf"], key="factura")
-
-if pdf_remito and pdf_factura:
-    st.divider()
-    st.header("🔍 Resultado de la Comparación")
-    
-    texto_remito = extraer_texto_pdf(pdf_remito)
-    texto_factura = extraer_texto_pdf(pdf_factura)
-    
-    # Extraer tablas directamente usando pdfplumber
-    def extraer_tablas(file):
-        filas = []
-        with pdfplumber.open(file) as pdf:
-            for page in pdf.pages:
+        for num_pag in paginas:
+            if 1 <= num_pag <= total_paginas:
+                page = pdf.pages[num_pag - 1]
+                
+                # Extraer texto
+                t = page.extract_text()
+                if t:
+                    texto_completo += f"--- Página {num_pag} ---\n" + t + "\n\n"
+                
+                # Extraer tablas
                 tables = page.extract_tables()
                 for table in tables:
                     for row in table:
-                        # Limpiar celdas vacías o saltos de línea
                         row_limpia = [str(cell).replace('\n', ' ').strip() if cell else "" for cell in row]
                         if any(row_limpia):
-                            filas.append(row_limpia)
-        return filas
+                            filas_tablas.append(row_limpia)
+                            
+    return filas_tablas, texto_completo
 
-    tablas_remito = extraer_tablas(pdf_remito)
-    tablas_factura = extraer_tablas(pdf_factura)
+# --- Selección de Modo de Carga ---
+
+modo_carga = st.radio(
+    "¿Cómo querés subir los documentos?",
+    ["Un solo PDF (Remito + Factura en el mismo archivo)", "Dos PDFs separados"],
+    horizontal=True
+)
+
+tablas_remito, tablas_factura = [], []
+texto_remito, texto_factura = "", ""
+listo_para_comparar = False
+
+if modo_carga == "Un solo PDF (Remito + Factura en el mismo archivo)":
+    archivo_unico = st.file_uploader("Subir el PDF unificado", type=["pdf"], key="unico")
+    
+    if archivo_unico:
+        with pdfplumber.open(archivo_unico) as pdf:
+            cant_paginas = len(pdf.pages)
+        
+        st.info(f"📄 El archivo subido tiene **{cant_paginas} página(s)**.")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            pag_remito = st.multiselect(
+                "Seleccioná la(s) página(s) del Remito:",
+                options=list(range(1, cant_paginas + 1)),
+                default=[1] if cant_paginas >= 1 else []
+            )
+        with col2:
+            pag_factura = st.multiselect(
+                "Seleccioná la(s) página(s) de la Factura:",
+                options=list(range(1, cant_paginas + 1)),
+                default=[2] if cant_paginas >= 2 else [1]
+            )
+            
+        if pag_remito and pag_factura:
+            tablas_remito, texto_remito = extraer_tablas_y_texto(archivo_unico, pag_remito)
+            tablas_factura, texto_factura = extraer_tablas_y_texto(archivo_unico, pag_factura)
+            listo_para_comparar = True
+        else:
+            st.warning("Seleccioná al menos una página para el remito y una para la factura.")
+
+else:
+    col1, col2 = st.columns(2)
+    with col1:
+        pdf_remito = st.file_uploader("Subir PDF del Remito", type=["pdf"], key="remito")
+    with col2:
+        pdf_factura = st.file_uploader("Subir PDF de la Factura", type=["pdf"], key="factura")
+        
+    if pdf_remito and pdf_factura:
+        tablas_remito, texto_remito = extraer_tablas_y_texto(pdf_remito)
+        tablas_factura, texto_factura = extraer_tablas_y_texto(pdf_factura)
+        listo_para_comparar = True
+
+# --- Mostrar Resultados ---
+
+if listo_para_comparar:
+    st.divider()
+    st.header("🔍 Resultado de la Comparación")
 
     tab1, tab2, tab3 = st.tabs(["📊 Vista Comparativa", "📜 Texto Extraído Remito", "📜 Texto Extraído Factura"])
 
     with tab1:
-        st.subheader("Tablas Detectadas en el Remito")
-        if tablas_remito:
-            df_remito = pd.DataFrame(tablas_remito)
-            st.dataframe(df_remito, use_container_width=True)
-        else:
-            st.warning("No se detectaron tablas con formato estándar en el Remito. Revisá la solapa de texto plano.")
+        col_r, col_f = st.columns(2)
+        
+        with col_r:
+            st.subheader("📋 Datos del Remito")
+            if tablas_remito:
+                st.dataframe(pd.DataFrame(tablas_remito), use_container_width=True)
+            else:
+                st.warning("No se detectaron tablas automáticas en las páginas del remito.")
 
-        st.subheader("Tablas Detectadas en la Factura")
-        if tablas_factura:
-            df_factura = pd.DataFrame(tablas_factura)
-            st.dataframe(df_factura, use_container_width=True)
-        else:
-            st.warning("No se detectaron tablas con formato estándar en la Factura. Revisá la solapa de texto plano.")
-
-        st.info("💡 **Tip:** Para hacer una comparación exacta por producto, podés mapear las columnas correspondientes a 'Código/Descripción' y 'Cantidad' de cada comprobante.")
+        with col_f:
+            st.subheader("🧾 Datos de la Factura")
+            if tablas_factura:
+                st.dataframe(pd.DataFrame(tablas_factura), use_container_width=True)
+            else:
+                st.warning("No se detectaron tablas automáticas en las páginas de la factura.")
 
     with tab2:
-        st.text_area("Texto completo del Remito", texto_remito, height=300)
+        st.text_area("Texto detectado en el Remito", texto_remito, height=350)
 
     with tab3:
-        st.text_area("Texto completo de la Factura", texto_factura, height=300)
-
-else:
-    st.info("👆 Por favor, subí ambos archivos PDF arriba para iniciar el análisis.")
+        st.text_area("Texto detectado en la Factura", texto_factura, height=350)
