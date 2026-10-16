@@ -88,7 +88,8 @@ else:
                     
                     resultado = procesar_documento_ia(archivo_unico.getvalue(), prompt_unificado)
                     
-                    if resultado and "remito" in resultado y "factura" in resultado:
+                    # CORREGIDO AQUÍ: se usa "and" en vez de "y"
+                    if resultado and "remito" in resultado and "factura" in resultado:
                         df_remito = pd.DataFrame(resultado["remito"])
                         df_factura = pd.DataFrame(resultado["factura"])
                         listo_para_comparar = True
