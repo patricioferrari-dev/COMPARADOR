@@ -9,19 +9,46 @@ from PIL import Image
 st.set_page_config(page_title="Comparador IA: Remito vs Factura", layout="wide")
 
 st.title("🤖 Comparador IA Definitivo (Visión Real)")
-st.write("Esta versión convierte los PDFs en imágenes y usa la visión de la IA para extraer los datos sin fallos.")
+st.write("Esta versión convierte los PDFs en imágenes y busca automáticamente el modelo de IA compatible con tu cuenta.")
 
-# --- Configuración de la API ---
+# --- Configuración de la API y Autodetección de Modelo ---
 with st.sidebar:
     st.header("🔑 Configuración")
     api_key = st.text_input("Ingresá tu API Key de Gemini:", type="password")
 
+modelo = None
 if api_key:
-    genai.configure(api_key=api_key)
-    modelo = genai.GenerativeModel('gemini-1.5-flash')
+    try:
+        genai.configure(api_key=api_key)
+        
+        # Le preguntamos a Google qué modelos existen para tu API Key
+        modelos_disponibles = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # Buscamos el mejor modelo disponible en orden de preferencia
+        nombres_preferidos = ['models/gemini-1.5-flash', 'models/gemini-1.5-pro', 'models/gemini-pro-vision']
+        modelo_elegido = next((m for m in nombres_preferidos if m in modelos_disponibles), None)
+        
+        # Si no encuentra ninguno de los preferidos, usa el primero de la lista que soporte imágenes
+        if not modelo_elegido and modelos_disponibles:
+            modelo_elegido = modelos_disponibles[0]
+            
+        if modelo_elegido:
+            # Quitamos el prefijo 'models/' para instanciarlo correctamente
+            nombre_limpio = modelo_elegido.replace('models/', '')
+            modelo = genai.GenerativeModel(nombre_limpio)
+            st.sidebar.success(f"✅ Conectado al modelo: {nombre_limpio}")
+        else:
+            st.sidebar.error("Tu API Key no tiene modelos compatibles habilitados.")
+            
+    except Exception as e:
+        st.sidebar.error("Error al verificar modelos. Revisá tu API Key.")
+        st.sidebar.info(str(e))
 
 def procesar_pdf_como_imagen(pdf_bytes, paginas, tipo_doc):
-    """Toma una 'foto' del PDF y se la envía a la IA."""
+    if not modelo:
+        st.error("No hay un modelo de IA configurado.")
+        return pd.DataFrame()
+        
     try:
         doc = fitz.open("pdf", pdf_bytes)
         imagenes = []
@@ -29,7 +56,6 @@ def procesar_pdf_como_imagen(pdf_bytes, paginas, tipo_doc):
         for num in paginas:
             if 1 <= num <= len(doc):
                 pagina = doc.load_page(num - 1)
-                # Genera una imagen nítida de la página
                 pix = pagina.get_pixmap(dpi=200)
                 img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                 imagenes.append(img)
@@ -47,7 +73,6 @@ def procesar_pdf_como_imagen(pdf_bytes, paginas, tipo_doc):
         contenidos = [prompt] + imagenes
         respuesta = modelo.generate_content(contenidos)
         
-        # Filtro de seguridad para limpiar texto extra si la IA habla de más
         match = re.search(r'\[.*\]', respuesta.text, re.DOTALL)
         if match:
             datos = json.loads(match.group(0))
@@ -63,7 +88,7 @@ def procesar_pdf_como_imagen(pdf_bytes, paginas, tipo_doc):
 # --- Interfaz de Carga ---
 if not api_key:
     st.warning("👈 Por favor, ingresá tu API Key en el panel izquierdo.")
-else:
+elif modelo:
     modo_carga = st.radio("Formato de subida:", ["Dos PDFs separados", "Un solo PDF (Remito + Factura)"], horizontal=True)
 
     df_remito = pd.DataFrame()
