@@ -3,14 +3,17 @@ import pdfplumber
 import pandas as pd
 import re
 
-st.set_page_config(page_title="Comparador Comprobantes PDF", layout="wide")
+st.set_page_config(page_title="Comparador Remito vs Factura", layout="wide")
 
-st.title("📋 Comparador de Documentos (Orden / Remito / Factura)")
+st.title("📋 Comparador Remito vs Factura (PDF)")
+st.write("Podés subir **dos archivos separados** o **un solo PDF** (con las páginas de ambos documentos) para realizar la extracción y comparación.")
+
+# --- Función de Extracción Avanzada ---
 
 def extraer_datos_documento(pdf_file, paginas=None):
     """
-    Extrae tablas ajustando tolerancias de pdfplumber y usa fallback 
-    de Expresiones Regulares si no detecta estructura de celdas.
+    Extrae texto y tablas de páginas específicas utilizando estrategias de alineación 
+    de texto (ideal para comprobantes de ARCA/AFIP y órdenes de compra sin bordes).
     """
     filas_detectadas = []
     texto_completo = ""
@@ -23,10 +26,12 @@ def extraer_datos_documento(pdf_file, paginas=None):
         for num_pag in paginas:
             if 1 <= num_pag <= total_paginas:
                 page = pdf.pages[num_pag - 1]
+                
+                # 1. Extraer texto preservando disposición de columnas
                 t = page.extract_text(layout=True) or page.extract_text() or ""
                 texto_completo += f"--- Página {num_pag} ---\n" + t + "\n\n"
 
-                # 1. Estrategia con tolerancias avanzadas para tablas sin bordes visibles
+                # 2. Estrategia basada en alineación de texto para tablas sin líneas/bordes
                 table_settings = {
                     "vertical_strategy": "text",
                     "horizontal_strategy": "text",
@@ -41,14 +46,14 @@ def extraer_datos_documento(pdf_file, paginas=None):
                     for table in tables:
                         for row in table:
                             row_limpia = [str(cell).replace('\n', ' ').strip() if cell else "" for cell in row]
+                            # Filtrar filas vacías o de una sola celda
                             if any(row_limpia) and len([c for c in row_limpia if c]) > 1:
                                 filas_detectadas.append(row_limpia)
 
-                # 2. Fallback de Extracción por Regex si no encontró filas
+                # 3. Fallback: Parseo por regex si no se estructuraron celdas
                 if not filas_detectadas and t:
                     lines = t.split('\n')
                     for line in lines:
-                        # Busca patrones típicos de ítems: [Código] [Descripción] [Cantidad] [Precio/Total]
                         match = re.search(r'([A-Z0-9_-]{3,})\s+(.+?)\s+(\d+[\.,]?\d*)\s+(\d+[\.,]?\d*)', line)
                         if match:
                             filas_detectadas.append(list(match.groups()))
@@ -56,43 +61,88 @@ def extraer_datos_documento(pdf_file, paginas=None):
     return filas_detectadas, texto_completo
 
 
-# --- Interfaz de Carga ---
-st.subheader("Subí tus archivos PDF para analizar")
+# --- Selección del Modo de Carga ---
 
-col1, col2 = st.columns(2)
-with col1:
-    file_doc1 = st.file_uploader("Documento 1 (Ej. Orden de Compra / Remito)", type=["pdf"], key="doc1")
-with col2:
-    file_doc2 = st.file_uploader("Documento 2 (Ej. Factura)", type=["pdf"], key="doc2")
+modo_carga = st.radio(
+    "¿Cómo querés subir los documentos?",
+    ["Un solo PDF (Remito + Factura en el mismo archivo)", "Dos PDFs separados"],
+    horizontal=True
+)
 
-if file_doc1 and file_doc2:
-    st.divider()
+tablas_remito, tablas_factura = [], []
+texto_remito, texto_factura = "", ""
+listo_para_comparar = False
+
+if modo_carga == "Un solo PDF (Remito + Factura en el mismo archivo)":
+    archivo_unico = st.file_uploader("Subir el PDF unificado", type=["pdf"], key="unico")
     
-    filas_1, texto_1 = extraer_datos_documento(file_doc1)
-    filas_2, texto_2 = extraer_datos_documento(file_doc2)
+    if archivo_unico:
+        with pdfplumber.open(archivo_unico) as pdf:
+            cant_paginas = len(pdf.pages)
+        
+        st.info(f"📄 El archivo subido tiene **{cant_paginas} página(s)**.")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            pag_remito = st.multiselect(
+                "Seleccioná la(s) página(s) del Remito / Orden:",
+                options=list(range(1, cant_paginas + 1)),
+                default=[1] if cant_paginas >= 1 else []
+            )
+        with col2:
+            pag_factura = st.multiselect(
+                "Seleccioná la(s) página(s) de la Factura:",
+                options=list(range(1, cant_paginas + 1)),
+                default=[2] if cant_paginas >= 2 else [1]
+            )
+            
+        if pag_remito and pag_factura:
+            tablas_remito, texto_remito = extraer_datos_documento(archivo_unico, pag_remito)
+            tablas_factura, texto_factura = extraer_datos_documento(archivo_unico, pag_factura)
+            listo_para_comparar = True
+        else:
+            st.warning("Seleccioná al menos una página para el remito y una para la factura.")
 
-    tab1, tab2, tab3 = st.tabs(["📊 Comparación Estructurada", "📜 Texto Doc 1", "📜 Texto Doc 2"])
+else:
+    col1, col2 = st.columns(2)
+    with col1:
+        pdf_remito = st.file_uploader("Subir PDF del Remito / Orden de Compra", type=["pdf"], key="remito")
+    with col2:
+        pdf_factura = st.file_uploader("Subir PDF de la Factura", type=["pdf"], key="factura")
+        
+    if pdf_remito and pdf_factura:
+        tablas_remito, texto_remito = extraer_datos_documento(pdf_remito)
+        tablas_factura, texto_factura = extraer_datos_documento(pdf_factura)
+        listo_para_comparar = True
+
+
+# --- Mostrar Resultados ---
+
+if listo_para_comparar:
+    st.divider()
+    st.header("🔍 Resultado de la Extracción y Comparación")
+
+    tab1, tab2, tab3 = st.tabs(["📊 Tablas Estructuradas", "📜 Texto Remito / Orden", "📜 Texto Factura"])
 
     with tab1:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.subheader("Documento 1")
-            if filas_1:
-                df1 = pd.DataFrame(filas_1)
-                st.dataframe(df1, use_container_width=True)
+        col_r, col_f = st.columns(2)
+        
+        with col_r:
+            st.subheader("📋 Remito / Orden de Compra")
+            if tablas_remito:
+                st.dataframe(pd.DataFrame(tablas_remito), use_container_width=True)
             else:
-                st.warning("No se estructuraron celdas. Revisá la pestaña de texto plano.")
+                st.warning("No se detectaron tablas automáticas. Revisá la pestaña de texto plano.")
 
-        with c2:
-            st.subheader("Documento 2")
-            if filas_2:
-                df2 = pd.DataFrame(filas_2)
-                st.dataframe(df2, use_container_width=True)
+        with col_f:
+            st.subheader("🧾 Factura")
+            if tablas_factura:
+                st.dataframe(pd.DataFrame(tablas_factura), use_container_width=True)
             else:
-                st.warning("No se estructuraron celdas. Revisá la pestaña de texto plano.")
+                st.warning("No se detectaron tablas automáticas. Revisá la pestaña de texto plano.")
 
     with tab2:
-        st.text_area("Texto plano de Doc 1", texto_1, height=400)
+        st.text_area("Texto detectado en Remito / Orden", texto_remito, height=350)
 
     with tab3:
-        st.text_area("Texto plano de Doc 2", texto_2, height=400)
+        st.text_area("Texto detectado en Factura", texto_factura, height=350)
