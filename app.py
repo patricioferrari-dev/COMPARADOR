@@ -18,14 +18,27 @@ with st.sidebar:
 if api_key:
     genai.configure(api_key=api_key)
 
-def obtener_modelo():
-    # Intenta inicializar con los modelos disponibles
-    for nombre in ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-3.8-flash']:
-        try:
-            m = genai.GenerativeModel(nombre)
-            return m
-        except:
-            continue
+def obtener_modelo_activo():
+    """Obtiene dinámicamente un modelo activo sin hardcodear nombres descontinuados."""
+    try:
+        # Obtenemos los modelos que soportan generateContent
+        modelos_disponibles = [
+            m.name.replace('models/', '') 
+            for m in genai.list_models() 
+            if 'generateContent' in m.supported_generation_methods
+        ]
+        
+        # Priorizamos flash sobre pro para mayor velocidad
+        modelos_flash = [m for m in modelos_disponibles if 'flash' in m]
+        if modelos_flash:
+            return genai.GenerativeModel(modelos_flash[0])
+            
+        if modelos_disponibles:
+            return genai.GenerativeModel(modelos_disponibles[0])
+    except Exception:
+        pass
+        
+    # Respaldo universal estándar
     return genai.GenerativeModel('gemini-1.5-flash')
 
 def procesar_pdf_como_imagen(pdf_bytes, paginas, tipo_doc, modelo):
@@ -36,7 +49,6 @@ def procesar_pdf_como_imagen(pdf_bytes, paginas, tipo_doc, modelo):
         for num in paginas:
             if 1 <= num <= len(doc):
                 pagina = doc.load_page(num - 1)
-                # Calidad optimizada para que sea ultra rápido el envío
                 pix = pagina.get_pixmap(dpi=150)
                 img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                 imagenes.append(img)
@@ -85,8 +97,8 @@ else:
             with c2: pag_factura = st.multiselect("Páginas Factura:", list(range(1, cant + 1)), default=[2] if cant > 1 else [1])
             
             if st.button("🚀 Comparar Documentos"):
-                with st.spinner("Procesando rápida lectura visual..."):
-                    modelo = obtener_modelo()
+                with st.spinner("Conectando con modelo activo y procesando lectura visual..."):
+                    modelo = obtener_modelo_activo()
                     res_remito = procesar_pdf_como_imagen(archivo_bytes, pag_remito, "Remito", modelo)
                     res_factura = procesar_pdf_como_imagen(archivo_bytes, pag_factura, "Factura", modelo)
                     
@@ -101,8 +113,8 @@ else:
         
         if pdf_remito and pdf_factura:
             if st.button("🚀 Comparar Documentos"):
-                with st.spinner("Procesando rápida lectura visual..."):
-                    modelo = obtener_modelo()
+                with st.spinner("Conectando con modelo activo y procesando lectura visual..."):
+                    modelo = obtener_modelo_activo()
                     res_remito = procesar_pdf_como_imagen(pdf_remito.getvalue(), [1], "Remito", modelo)
                     res_factura = procesar_pdf_como_imagen(pdf_factura.getvalue(), [1], "Factura", modelo)
                     
@@ -130,7 +142,6 @@ else:
             st.divider()
             st.header("⚖️ Conciliación Automática")
             
-            # Asignar clave para cruce
             col_rem = 'codigo' if 'codigo' in df_remito.columns and df_remito['codigo'].astype(bool).any() else 'descripcion'
             col_fac = 'codigo' if 'codigo' in df_factura.columns and df_factura['codigo'].astype(bool).any() else 'descripcion'
             
@@ -154,4 +165,5 @@ else:
                     return ['background-color: #ffcccc'] * len(row)
                 return [''] * len(row)
                 
+            st.dataframe(df_cruce.style.apply(resaltar_diferencias, axis=1), use_container_width=True)
             st.dataframe(df_cruce.style.apply(resaltar_diferencias, axis=1), use_container_width=True)
