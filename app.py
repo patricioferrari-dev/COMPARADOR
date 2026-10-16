@@ -6,33 +6,6 @@ import re
 st.set_page_config(page_title="Comparador Remito vs Factura", layout="wide")
 st.title("📋 Comparador Inteligente de Comprobantes")
 
-def procesar_texto_a_filas(texto):
-    filas = []
-    lineas = texto.split('\n')
-    
-    for linea in lineas:
-        # Limpiamos barras y caracteres raros
-        l = linea.replace('|', ' ').strip()
-        if not l:
-            continue
-            
-        # Filtramos subtotales y encabezados para que no los sume como productos
-        if re.search(r'(Subtotal|Total|Impuestos|IVA|CUIT|Condición|Página|Fecha|Base|Bruto)', l, re.IGNORECASE):
-            continue
-
-        # BUSCADOR UNIVERSAL: Captura la fila si tiene palabras y al menos un número decimal (ej. 12,00 o 1.234,56)
-        if re.search(r'\d+,\d{2}', l) and re.search(r'[A-Za-z]', l):
-            # Intentamos separar por tabulaciones o espacios grandes
-            columnas = [col.strip() for col in re.split(r'\s{2,}|\t', l) if col.strip()]
-            
-            # Si todo quedó pegado, lo separamos por espacios simples
-            if len(columnas) < 3:
-                columnas = l.split()
-                
-            filas.append(columnas)
-
-    return filas
-
 def extraer_datos_documento(pdf_file, paginas=None):
     filas_detectadas = []
     texto_completo = ""
@@ -45,14 +18,39 @@ def extraer_datos_documento(pdf_file, paginas=None):
         for num_pag in paginas:
             if 1 <= num_pag <= total_paginas:
                 page = pdf.pages[num_pag - 1]
-                # Extraemos el texto crudo intentando mantener la posición visual
-                t = page.extract_text(layout=True) or page.extract_text() or ""
-                texto_completo += f"--- Página {num_pag} ---\n" + t + "\n\n"
-
-                if t:
-                    filas_pagina = procesar_texto_a_filas(t)
-                    if filas_pagina:
-                        filas_detectadas.extend(filas_pagina)
+                
+                # TÉCNICA DEFINITIVA: Extraer por coordenadas exactas
+                words = page.extract_words()
+                lineas_dict = {}
+                
+                for w in words:
+                    # Agrupamos palabras que estén a la misma altura (tolerancia de 3 puntos)
+                    y = round(w['top'] / 3) * 3
+                    if y not in lineas_dict:
+                        lineas_dict[y] = []
+                    lineas_dict[y].append(w)
+                
+                texto_completo += f"--- Página {num_pag} ---\n"
+                
+                # Reconstruimos renglón por renglón
+                for y in sorted(lineas_dict.keys()):
+                    # Ordenamos las palabras de izquierda a derecha
+                    palabras = sorted(lineas_dict[y], key=lambda x: x['x0'])
+                    texto_linea = " ".join([p['text'] for p in palabras])
+                    texto_completo += texto_linea + "\n"
+                    
+                    l_upper = texto_linea.upper()
+                    
+                    # Filtramos basura, direcciones y encabezados
+                    if re.search(r'(SUBTOTAL|TOTAL|IMPUESTO|IVA|CUIT|CONDIC|PÁGINA|FECHA|BASE|BRUTO|DOMICILIO|CLIENTE|LOCALIDAD|ALVAREZ|THOMAS|MERCEDES|AIRES|CAPITAL)', l_upper):
+                        continue
+                        
+                    # Si el renglón tiene números y al menos dos letras juntas (código o descripción), lo guardamos
+                    if re.search(r'\d', l_upper) and re.search(r'[A-Z]{2,}', l_upper):
+                        # Separamos de forma limpia los elementos
+                        filas_detectadas.append(texto_linea.split())
+                        
+                texto_completo += "\n"
 
     return filas_detectadas, texto_completo
 
@@ -94,7 +92,7 @@ else:
 if listo_para_comparar:
     st.divider()
     st.header("🔍 Datos Extraídos")
-    tab1, tab2, tab3 = st.tabs(["📊 Tabla de Ítems", "📜 Texto Orden", "📜 Texto Factura"])
+    tab1, tab2, tab3 = st.tabs(["📊 Tabla de Ítems", "📜 Texto Orden reconstruido", "📜 Texto Factura reconstruido"])
 
     with tab1:
         col_r, col_f = st.columns(2)
