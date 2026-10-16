@@ -15,7 +15,7 @@ with st.sidebar:
 
 if api_key:
     genai.configure(api_key=api_key)
-    modelo = genai.GenerativeModel('gemini-1.5-pro-latest')
+    modelo = genai.GenerativeModel('gemini-1.5-pro')
 
 def procesar_documento_ia(archivo_bytes, prompt):
     """Envía el PDF crudo directamente a los 'ojos' de Gemini para que haga OCR y lo estructure."""
