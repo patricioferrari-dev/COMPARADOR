@@ -17,7 +17,6 @@ with st.sidebar:
 
 if api_key:
     genai.configure(api_key=api_key)
-    # Usamos el modelo flash por ser rápido y eficiente
     modelo = genai.GenerativeModel('gemini-1.5-flash')
 
 def extraer_texto_pdf(pdf_file, paginas):
@@ -31,36 +30,30 @@ def extraer_texto_pdf(pdf_file, paginas):
     return texto
 
 def extraer_datos_con_ia(texto, tipo_doc):
+    if not texto.strip():
+        st.warning(f"No pudimos leer el texto de {tipo_doc}. Verificá que no sea una imagen escaneada vacía.")
+        return pd.DataFrame()
+
     prompt = f"""
-    Sos un asistente experto en facturación argentina. Analizá el siguiente texto extraído de un/a {tipo_doc}.
-    Encontrá todos los artículos o productos facturados/remitidos.
-    Ignorá subtotales, impuestos, direcciones y encabezados.
+    Analizá el siguiente texto de un comprobante ({tipo_doc}).
+    Extraé todos los artículos y devolvé un arreglo JSON con las siguientes claves: "codigo", "descripcion", "cantidad", "precio".
+    Si falta un dato, usá un string vacío "" o 0.0 para números. No incluyas impuestos ni totales.
     
-    Devolvé ÚNICAMENTE un array JSON válido con la siguiente estructura exacta:
-    [
-      {{"codigo": "CH01", "descripcion": "Chapita...", "cantidad": 2.0, "precio": 100.50}},
-      ...
-    ]
-    Si no encontrás un código, dejá un string vacío "". Si no hay precio (ej. en un remito), poné 0.0.
-    NO agregues texto antes ni después del JSON. NO uses formato markdown (```json).
-    
-    Texto del documento:
+    Texto:
     {texto}
     """
     
     try:
-        respuesta = modelo.generate_content(prompt)
-        texto_json = respuesta.text.strip()
-        # Limpieza por si la IA devuelve markdown
-        if texto_json.startswith("```json"):
-            texto_json = texto_json[7:-3].strip()
-        elif texto_json.startswith("```"):
-            texto_json = texto_json[3:-3].strip()
-            
-        datos = json.loads(texto_json)
+        # Modo estricto: Obliga a Gemini a devolver solo datos válidos, sin texto conversacional
+        respuesta = modelo.generate_content(
+            prompt,
+            generation_config={"response_mime_type": "application/json"}
+        )
+        datos = json.loads(respuesta.text)
         return pd.DataFrame(datos)
     except Exception as e:
-        st.error(f"Error procesando el {tipo_doc} con IA. Revisá el texto bruto.")
+        st.error(f"Error procesando el {tipo_doc}.")
+        st.info("Detalle técnico para el desarrollador: " + str(e))
         return pd.DataFrame()
 
 # --- Interfaz de Carga ---
@@ -98,7 +91,7 @@ else:
         if pdf_remito and pdf_factura:
             if st.button("🚀 Extraer y Comparar"):
                 with st.spinner("La IA está leyendo los documentos..."):
-                    texto_remito = extraer_texto_pdf(pdf_remito, [1]) # Simplificado a pag 1
+                    texto_remito = extraer_texto_pdf(pdf_remito, [1]) 
                     texto_factura = extraer_texto_pdf(pdf_factura, [1])
                     df_remito = extraer_datos_con_ia(texto_remito, "Orden de Compra / Remito")
                     df_factura = extraer_datos_con_ia(texto_factura, "Factura")
@@ -120,16 +113,14 @@ else:
         st.divider()
         st.header("⚖️ Conciliación Automática")
         
-        # Unimos las tablas usando el 'codigo' o 'descripcion' como clave
         if 'codigo' in df_remito.columns and 'codigo' in df_factura.columns:
             df_cruce = pd.merge(df_remito, df_factura, on='codigo', how='outer', suffixes=('_remito', '_factura'))
             
-            # Calculamos diferencias
-            df_cruce['diferencia_cant'] = df_cruce['cantidad_remito'].fillna(0) - df_cruce['cantidad_factura'].fillna(0)
+            # Aseguramos que la columna de cantidad se calcule bien aunque haya faltantes
+            df_cruce['diferencia_cant'] = pd.to_numeric(df_cruce['cantidad_remito'], errors='coerce').fillna(0) - pd.to_numeric(df_cruce['cantidad_factura'], errors='coerce').fillna(0)
             
-            st.write("Comparamos los artículos basándonos en su código. Las filas con diferencias están resaltadas.")
+            st.write("Comparamos los artículos basándonos en su código. Las filas con diferencias de cantidad están resaltadas en rojo.")
             
-            # Resaltar filas con diferencias
             def resaltar_diferencias(row):
                 if row['diferencia_cant'] != 0:
                     return ['background-color: #ffcccc'] * len(row)
@@ -137,4 +128,4 @@ else:
                 
             st.dataframe(df_cruce.style.apply(resaltar_diferencias, axis=1), use_container_width=True)
         else:
-            st.warning("No se detectó una columna de código clara para hacer el cruce automático.")
+            st.warning("No se detectó una columna de código clara para hacer el cruce.")
