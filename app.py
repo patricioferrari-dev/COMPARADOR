@@ -1,14 +1,15 @@
 import streamlit as st
-import pdfplumber
 import pandas as pd
 import google.generativeai as genai
 import json
-import io
+import re
+import fitz  # PyMuPDF
+from PIL import Image
 
 st.set_page_config(page_title="Comparador IA: Remito vs Factura", layout="wide")
 
-st.title("🤖 Comparador Automático con Inteligencia Artificial")
-st.write("Usa IA para leer PDFs desordenados, extraer los artículos y compararlos automáticamente.")
+st.title("🤖 Comparador IA Definitivo (Visión Real)")
+st.write("Esta versión convierte los PDFs en imágenes y usa la visión de la IA para extraer los datos sin fallos.")
 
 # --- Configuración de la API ---
 with st.sidebar:
@@ -19,70 +20,72 @@ if api_key:
     genai.configure(api_key=api_key)
     modelo = genai.GenerativeModel('gemini-1.5-flash')
 
-def extraer_texto_pdf(archivo_bytes, paginas):
-    texto = ""
-    with pdfplumber.open(io.BytesIO(archivo_bytes)) as pdf:
-        for num in paginas:
-            if 1 <= num <= len(pdf.pages):
-                page = pdf.pages[num - 1]
-                t = page.extract_text(layout=True) or page.extract_text() or ""
-                texto += t + "\n"
-    return texto
-
-def extraer_datos_con_ia(texto, tipo_doc):
-    if not texto.strip():
-        st.warning(f"⚠️ El documento '{tipo_doc}' parece ser una imagen sin texto real. No se pudo leer.")
-        return pd.DataFrame()
-
-    prompt = f"""
-    Analizá el siguiente texto de un comprobante ({tipo_doc}).
-    Extraé todos los artículos y devolvé un arreglo JSON con las siguientes claves: "codigo", "descripcion", "cantidad", "precio".
-    Si falta un dato, usá un string vacío "" o 0.0 para números. No incluyas impuestos ni totales.
-    
-    Texto:
-    {texto}
-    """
-    
+def procesar_pdf_como_imagen(pdf_bytes, paginas, tipo_doc):
+    """Toma una 'foto' del PDF y se la envía a la IA."""
     try:
-        respuesta = modelo.generate_content(
-            prompt,
-            generation_config={"response_mime_type": "application/json"}
-        )
-        datos = json.loads(respuesta.text)
-        return pd.DataFrame(datos)
+        doc = fitz.open("pdf", pdf_bytes)
+        imagenes = []
+        
+        for num in paginas:
+            if 1 <= num <= len(doc):
+                pagina = doc.load_page(num - 1)
+                # Genera una imagen nítida de la página
+                pix = pagina.get_pixmap(dpi=200)
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                imagenes.append(img)
+                
+        if not imagenes:
+            st.warning(f"No se pudieron generar imágenes para {tipo_doc}.")
+            return pd.DataFrame()
+
+        prompt = f"""
+        Analizá las siguientes imágenes de un comprobante ({tipo_doc}).
+        Extraé todos los artículos comerciales y devolvé ÚNICAMENTE un arreglo JSON válido con las claves: "codigo", "descripcion", "cantidad", "precio".
+        Si falta un dato, usá un string vacío "" o 0.0 para números. No incluyas nada más que el JSON.
+        """
+        
+        contenidos = [prompt] + imagenes
+        respuesta = modelo.generate_content(contenidos)
+        
+        # Filtro de seguridad para limpiar texto extra si la IA habla de más
+        match = re.search(r'\[.*\]', respuesta.text, re.DOTALL)
+        if match:
+            datos = json.loads(match.group(0))
+            return pd.DataFrame(datos)
+        else:
+            st.error(f"La IA no devolvió un formato válido para {tipo_doc}.")
+            return pd.DataFrame()
+            
     except Exception as e:
-        st.error(f"❌ Error al pedirle a la IA que estructure los datos de {tipo_doc}.")
+        st.error(f"Error procesando la imagen de {tipo_doc}: {str(e)}")
         return pd.DataFrame()
 
 # --- Interfaz de Carga ---
 if not api_key:
-    st.warning("👈 Por favor, ingresá tu API Key en el panel izquierdo para comenzar.")
+    st.warning("👈 Por favor, ingresá tu API Key en el panel izquierdo.")
 else:
     modo_carga = st.radio("Formato de subida:", ["Dos PDFs separados", "Un solo PDF (Remito + Factura)"], horizontal=True)
 
     df_remito = pd.DataFrame()
     df_factura = pd.DataFrame()
-    texto_remito = ""
-    texto_factura = ""
     procesado = False
 
     if modo_carga == "Un solo PDF (Remito + Factura)":
         archivo_unico = st.file_uploader("Subir PDF unificado", type=["pdf"])
         if archivo_unico:
             archivo_bytes = archivo_unico.getvalue()
-            with pdfplumber.open(io.BytesIO(archivo_bytes)) as pdf:
-                cant = len(pdf.pages)
+            doc_temp = fitz.open("pdf", archivo_bytes)
+            cant = len(doc_temp)
+            doc_temp.close()
             
             c1, c2 = st.columns(2)
             with c1: pag_remito = st.multiselect("Páginas Remito/Orden:", list(range(1, cant + 1)), default=[1])
             with c2: pag_factura = st.multiselect("Páginas Factura:", list(range(1, cant + 1)), default=[2] if cant > 1 else [1])
             
-            if st.button("🚀 Extraer y Comparar"):
-                with st.spinner("La IA está procesando los documentos..."):
-                    texto_remito = extraer_texto_pdf(archivo_bytes, pag_remito)
-                    texto_factura = extraer_texto_pdf(archivo_bytes, pag_factura)
-                    df_remito = extraer_datos_con_ia(texto_remito, "Orden de Compra / Remito")
-                    df_factura = extraer_datos_con_ia(texto_factura, "Factura")
+            if st.button("🚀 Extraer Visualmente y Comparar"):
+                with st.spinner("Tomando fotos de los documentos y enviando a la IA..."):
+                    df_remito = procesar_pdf_como_imagen(archivo_bytes, pag_remito, "Orden de Compra / Remito")
+                    df_factura = procesar_pdf_como_imagen(archivo_bytes, pag_factura, "Factura")
                     procesado = True
 
     else:
@@ -91,23 +94,16 @@ else:
         with c2: pdf_factura = st.file_uploader("Subir Factura", type=["pdf"])
         
         if pdf_remito and pdf_factura:
-            if st.button("🚀 Extraer y Comparar"):
-                with st.spinner("La IA está procesando los documentos..."):
-                    texto_remito = extraer_texto_pdf(pdf_remito.getvalue(), [1]) 
-                    texto_factura = extraer_texto_pdf(pdf_factura.getvalue(), [1])
-                    df_remito = extraer_datos_con_ia(texto_remito, "Orden de Compra / Remito")
-                    df_factura = extraer_datos_con_ia(texto_factura, "Factura")
+            if st.button("🚀 Extraer Visualmente y Comparar"):
+                with st.spinner("Tomando fotos de los documentos y enviando a la IA..."):
+                    df_remito = procesar_pdf_como_imagen(pdf_remito.getvalue(), [1], "Orden de Compra / Remito")
+                    df_factura = procesar_pdf_como_imagen(pdf_factura.getvalue(), [1], "Factura")
                     procesado = True
 
     # --- Resultados y Cruce ---
     if procesado:
         st.divider()
-        st.header("✅ Resultado del Análisis")
-        
-        # Mostramos qué leyó realmente el programa (para descartar que esté en blanco)
-        with st.expander("👁️ Ver texto bruto extraído de los PDFs (Clic para abrir)"):
-            st.text_area("Texto Remito", texto_remito, height=150)
-            st.text_area("Texto Factura", texto_factura, height=150)
+        st.header("✅ Extracción Visual Exitosa")
         
         if not df_remito.empty or not df_factura.empty:
             c1, c2 = st.columns(2)
@@ -147,4 +143,4 @@ else:
                     
                 st.dataframe(df_cruce.style.apply(resaltar_diferencias, axis=1), use_container_width=True)
             else:
-                st.info("No se pudieron cruzar los datos porque falta la columna de códigos en uno de los archivos.")
+                st.info("No se pudieron cruzar los datos porque falta la columna de códigos.")
