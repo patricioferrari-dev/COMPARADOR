@@ -8,44 +8,31 @@ from PIL import Image
 
 st.set_page_config(page_title="Comparador IA: Remito vs Factura", layout="wide")
 
-st.title("🤖 Comparador IA (Procesamiento Fluido)")
+st.title("🤖 Comparador IA (Modo Directo)")
 
 # --- Configuración de la API ---
 with st.sidebar:
     st.header("🔑 Configuración")
     api_key = st.text_input("Ingresá tu API Key de Gemini:", type="password")
 
-if api_key:
-    genai.configure(api_key=api_key)
-
-def obtener_modelo_activo():
-    """Selecciona estrictamente gemini-3.8-flash o filtra cualquier modelo descontinuado."""
+def extraer_json_de_texto(texto):
+    """Extrae el bloque JSON de la respuesta de la IA."""
     try:
-        return genai.GenerativeModel('gemini-3.8-flash')
+        match = re.search(r'\[.*\]', texto, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+        match_obj = re.search(r'\{.*\}', texto, re.DOTALL)
+        if match_obj:
+            data = json.loads(match_obj.group(0))
+            if isinstance(data, list):
+                return data
+            elif isinstance(data, dict):
+                for k in ['articulos', 'items', 'productos', 'remito', 'factura']:
+                    if k in data and isinstance(data[k], list):
+                        return data[k]
+        return json.loads(texto)
     except Exception:
-        pass
-
-    try:
-        modelos_disponibles = [
-            m.name.replace('models/', '') 
-            for m in genai.list_models() 
-            if 'generateContent' in m.supported_generation_methods
-        ]
-        
-        modelos_validos = [
-            m for m in modelos_disponibles 
-            if not any(obsoleto in m for obsoleto in ['2.5', '1.5-flash', '1.5-pro'])
-        ]
-        
-        if modelos_validos:
-            return genai.GenerativeModel(modelos_validos[0])
-            
-        if modelos_disponibles:
-            return genai.GenerativeModel(modelos_disponibles[0])
-    except Exception:
-        pass
-        
-    return genai.GenerativeModel('gemini-3.8-flash')
+        return []
 
 def procesar_pdf_como_imagen(pdf_bytes, paginas, tipo_doc, modelo):
     try:
@@ -62,32 +49,39 @@ def procesar_pdf_como_imagen(pdf_bytes, paginas, tipo_doc, modelo):
         doc.close()
         
         if not imagenes:
-            return []
+            st.error(f"No se pudieron generar imágenes para {tipo_doc}.")
+            return [], ""
 
         prompt = f"""
-        Analizá el comprobante ({tipo_doc}).
-        Extraé todos los artículos y devolvé ÚNICAMENTE un arreglo JSON con:
-        [
-          {{"codigo": "...", "descripcion": "...", "cantidad": 1.0, "precio": 0.0}}
-        ]
-        No agregues texto explicativo, solo el JSON.
+        Analizá este comprobante ({tipo_doc}).
+        Extraé todos los artículos comerciales y devolvé ÚNICAMENTE un arreglo JSON con objetos que tengan las claves:
+        "codigo", "descripcion", "cantidad", "precio".
+        Si no hay código, poné "". Si no hay precio, poné 0.0.
+        Devolvé SOLO el JSON sin explicaciones ni markdown.
         """
         
         respuesta = modelo.generate_content([prompt] + imagenes)
+        raw_text = respuesta.text if hasattr(respuesta, 'text') else str(respuesta)
         
-        match = re.search(r'\[.*\]', respuesta.text, re.DOTALL)
-        if match:
-            return json.loads(match.group(0))
-        return []
+        datos = extraer_json_de_texto(raw_text)
+        return datos, raw_text
             
     except Exception as e:
-        st.error(f"Error en {tipo_doc}: {str(e)}")
-        return []
+        st.error(f"Error procesando {tipo_doc}: {str(e)}")
+        return [], str(e)
 
-# --- Interfaz y Procesamiento ---
+# --- Interfaz de Usuario ---
 if not api_key:
     st.warning("👈 Por favor, ingresá tu API Key en el panel izquierdo para comenzar.")
 else:
+    genai.configure(api_key=api_key)
+    
+    # Modelo directo asignado
+    try:
+        modelo = genai.GenerativeModel('gemini-1.5-flash')
+    except:
+        modelo = genai.GenerativeModel('gemini-1.5-pro')
+
     modo_carga = st.radio("Formato de subida:", ["Dos PDFs separados", "Un solo PDF (Remito + Factura)"], horizontal=True)
 
     if modo_carga == "Un solo PDF (Remito + Factura)":
@@ -103,14 +97,60 @@ else:
             with c2: pag_factura = st.multiselect("Páginas Factura:", list(range(1, cant + 1)), default=[2] if cant > 1 else [1])
             
             if st.button("🚀 Comparar Documentos"):
-                with st.spinner("Procesando con gemini-3.8-flash..."):
-                    modelo = obtener_modelo_activo()
-                    res_remito = procesar_pdf_como_imagen(archivo_bytes, pag_remito, "Remito", modelo)
-                    res_factura = procesar_pdf_como_imagen(archivo_bytes, pag_factura, "Factura", modelo)
+                with st.spinner("Procesando lectura visual con Gemini..."):
+                    res_remito, raw_remito = procesar_pdf_como_imagen(archivo_bytes, pag_remito, "Remito", modelo)
+                    res_factura, raw_factura = procesar_pdf_como_imagen(archivo_bytes, pag_factura, "Factura", modelo)
                     
-                    st.session_state['df_remito'] = pd.DataFrame(res_remito)
-                    st.session_state['df_factura'] = pd.DataFrame(res_factura)
-                    st.session_state['listo'] = True
+                    st.divider()
+                    st.header("🔍 Diagnóstico y Respuesta de la IA")
+                    with st.expander("Ver respuesta en bruto de Gemini"):
+                        st.subheader("Respuesta Remito")
+                        st.code(raw_remito)
+                        st.subheader("Respuesta Factura")
+                        st.code(raw_factura)
+
+                    df_remito = pd.DataFrame(res_remito)
+                    df_factura = pd.DataFrame(res_factura)
+
+                    st.divider()
+                    st.header("✅ Resultado de la Extracción")
+                    
+                    c_a, c_b = st.columns(2)
+                    with c_a:
+                        st.subheader("📋 Datos Orden/Remito")
+                        st.dataframe(df_remito, use_container_width=True) if not df_remito.empty else st.warning("No se extrajeron artículos del Remito.")
+                    with c_b:
+                        st.subheader("🧾 Datos Factura")
+                        st.dataframe(df_factura, use_container_width=True) if not df_factura.empty else st.warning("No se extrajeron artículos de la Factura.")
+
+                    if not df_remito.empty and not df_factura.empty:
+                        st.divider()
+                        st.header("⚖️ Conciliación Automática")
+                        
+                        col_rem = 'codigo' if 'codigo' in df_remito.columns and df_remito['codigo'].astype(bool).any() else 'descripcion'
+                        col_fac = 'codigo' if 'codigo' in df_factura.columns and df_factura['codigo'].astype(bool).any() else 'descripcion'
+                        
+                        df_remito['clave'] = df_remito[col_rem]
+                        df_factura['clave'] = df_factura[col_fac]
+                        
+                        df_cruce = pd.merge(df_remito, df_factura, on='clave', how='outer', suffixes=('_remito', '_factura'))
+                        
+                        def a_numero(val):
+                            try:
+                                return float(str(val).replace(',', '.'))
+                            except:
+                                return 0.0
+                        
+                        df_cruce['cant_remito'] = df_cruce.get('cantidad_remito', pd.Series()).apply(a_numero)
+                        df_cruce['cant_factura'] = df_cruce.get('cantidad_factura', pd.Series()).apply(a_numero)
+                        df_cruce['diferencia'] = df_cruce['cant_remito'] - df_cruce['cant_factura']
+                        
+                        def resaltar_diferencias(row):
+                            if row['diferencia'] != 0:
+                                return ['background-color: #ffcccc'] * len(row)
+                            return [''] * len(row)
+                            
+                        st.dataframe(df_cruce.style.apply(resaltar_diferencias, axis=1), use_container_width=True)
 
     else:
         c1, c2 = st.columns(2)
@@ -119,56 +159,58 @@ else:
         
         if pdf_remito and pdf_factura:
             if st.button("🚀 Comparar Documentos"):
-                with st.spinner("Procesando con gemini-3.8-flash..."):
-                    modelo = obtener_modelo_activo()
-                    res_remito = procesar_pdf_como_imagen(pdf_remito.getvalue(), [1], "Remito", modelo)
-                    res_factura = procesar_pdf_como_imagen(pdf_factura.getvalue(), [1], "Factura", modelo)
+                with st.spinner("Procesando lectura visual con Gemini..."):
+                    res_remito, raw_remito = procesar_pdf_como_imagen(pdf_remito.getvalue(), [1], "Remito", modelo)
+                    res_factura, raw_factura = procesar_pdf_como_imagen(pdf_factura.getvalue(), [1], "Factura", modelo)
                     
-                    st.session_state['df_remito'] = pd.DataFrame(res_remito)
-                    st.session_state['df_factura'] = pd.DataFrame(res_factura)
-                    st.session_state['listo'] = True
+                    st.divider()
+                    st.header("🔍 Diagnóstico y Respuesta de la IA")
+                    with st.expander("Ver respuesta en bruto de Gemini"):
+                        st.subheader("Respuesta Remito")
+                        st.code(raw_remito)
+                        st.subheader("Respuesta Factura")
+                        st.code(raw_factura)
 
-    # --- Mostrar Resultados Persistentes ---
-    if st.session_state.get('listo', False):
-        df_remito = st.session_state.get('df_remito', pd.DataFrame())
-        df_factura = st.session_state.get('df_factura', pd.DataFrame())
-        
-        st.divider()
-        st.header("✅ Resultado del Análisis Visual")
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            st.subheader("📋 Datos Orden/Remito")
-            st.dataframe(df_remito, use_container_width=True) if not df_remito.empty else st.warning("No se detectaron datos.")
-        with c2:
-            st.subheader("🧾 Datos Factura")
-            st.dataframe(df_factura, use_container_width=True) if not df_factura.empty else st.warning("No se detectaron datos.")
+                    df_remito = pd.DataFrame(res_remito)
+                    df_factura = pd.DataFrame(res_factura)
 
-        if not df_remito.empty and not df_factura.empty:
-            st.divider()
-            st.header("⚖️ Conciliación Automática")
-            
-            col_rem = 'codigo' if 'codigo' in df_remito.columns and df_remito['codigo'].astype(bool).any() else 'descripcion'
-            col_fac = 'codigo' if 'codigo' in df_factura.columns and df_factura['codigo'].astype(bool).any() else 'descripcion'
-            
-            df_remito['clave'] = df_remito[col_rem]
-            df_factura['clave'] = df_factura[col_fac]
-            
-            df_cruce = pd.merge(df_remito, df_factura, on='clave', how='outer', suffixes=('_remito', '_factura'))
-            
-            def a_numero(val):
-                try:
-                    return float(str(val).replace(',', '.'))
-                except:
-                    return 0.0
-            
-            df_cruce['cant_remito'] = df_cruce.get('cantidad_remito', pd.Series()).apply(a_numero)
-            df_cruce['cant_factura'] = df_cruce.get('cantidad_factura', pd.Series()).apply(a_numero)
-            df_cruce['diferencia'] = df_cruce['cant_remito'] - df_cruce['cant_factura']
-            
-            def resaltar_diferencias(row):
-                if row['diferencia'] != 0:
-                    return ['background-color: #ffcccc'] * len(row)
-                return [''] * len(row)
-                
+                    st.divider()
+                    st.header("✅ Resultado de la Extracción")
+                    
+                    c_a, c_b = st.columns(2)
+                    with c_a:
+                        st.subheader("📋 Datos Orden/Remito")
+                        st.dataframe(df_remito, use_container_width=True) if not df_remito.empty else st.warning("No se extrajeron artículos del Remito.")
+                    with c_b:
+                        st.subheader("🧾 Datos Factura")
+                        st.dataframe(df_factura, use_container_width=True) if not df_factura.empty else st.warning("No se extrajeron artículos de la Factura.")
+
+                    if not df_remito.empty and not df_factura.empty:
+                        st.divider()
+                        st.header("⚖️ Conciliación Automática")
+                        
+                        col_rem = 'codigo' if 'codigo' in df_remito.columns and df_remito['codigo'].astype(bool).any() else 'descripcion'
+                        col_fac = 'codigo' if 'codigo' in df_factura.columns and df_factura['codigo'].astype(bool).any() else 'descripcion'
+                        
+                        df_remito['clave'] = df_remito[col_rem]
+                        df_factura['clave'] = df_factura[col_fac]
+                        
+                        df_cruce = pd.merge(df_remito, df_factura, on='clave', how='outer', suffixes=('_remito', '_factura'))
+                        
+                        def a_numero(val):
+                            try:
+                                return float(str(val).replace(',', '.'))
+                            except:
+                                return 0.0
+                        
+                        df_cruce['cant_remito'] = df_cruce.get('cantidad_remito', pd.Series()).apply(a_numero)
+                        df_cruce['cant_factura'] = df_cruce.get('cantidad_factura', pd.Series()).apply(a_numero)
+                        df_cruce['diferencia'] = df_cruce['cant_remito'] - df_cruce['cant_factura']
+                        
+                        def resaltar_diferencias(row):
+                            if row['diferencia'] != 0:
+                                return ['background-color: #ffcccc'] * len(row)
+                            return [''] * len(row)
+                            
+                        st.dataframe(df_cruce.style.apply(resaltar_diferencias, axis=1), use_container_width=True)
             st.dataframe(df_cruce.style.apply(resaltar_diferencias, axis=1), use_container_width=True)
